@@ -46,6 +46,27 @@ function toNumberSafe(value) {
   return Number.isFinite(num) ? num : null
 }
 
+const CODEX_MAX_BASE_MODEL = 'gpt-5.1-codex-max'
+function normalizeCodexMaxInference(model) {
+  if (!model || typeof model !== 'string') {
+    return { normalizedModel: model, schedulerModel: model, changed: false }
+  }
+
+  const lowerModel = model.toLowerCase()
+  const matchesCodexMax =
+    lowerModel === CODEX_MAX_BASE_MODEL || lowerModel.startsWith(`${CODEX_MAX_BASE_MODEL}-`)
+  if (matchesCodexMax) {
+    const normalizedModel = `${CODEX_MAX_BASE_MODEL}-high`
+    return {
+      normalizedModel,
+      schedulerModel: CODEX_MAX_BASE_MODEL,
+      changed: model !== normalizedModel
+    }
+  }
+
+  return { normalizedModel: model, schedulerModel: model, changed: false }
+}
+
 function extractCodexUsageHeaders(headers) {
   const normalized = normalizeHeaders(headers)
   if (!normalized || Object.keys(normalized).length === 0) {
@@ -247,12 +268,28 @@ const handleResponses = async (req, res) => {
 
     // 从请求体中提取模型和流式标志
     let requestedModel = req.body?.model || null
+    let schedulerModel = requestedModel
+
+    const { normalizedModel, schedulerModel: normalizedSchedulerModel, changed } =
+      normalizeCodexMaxInference(requestedModel)
+    if (changed) {
+      logger.info(
+        `📝 Normalizing Codex inference level to high: ${requestedModel} -> ${normalizedModel}`
+      )
+    }
+    requestedModel = normalizedModel
+    schedulerModel = normalizedSchedulerModel
+
+    if (req.body && normalizedModel && req.body.model !== normalizedModel) {
+      req.body.model = normalizedModel
+    }
 
     // 如果模型是 gpt-5 开头且后面还有内容（如 gpt-5-2025-08-07），则覆盖为 gpt-5
     if (requestedModel && requestedModel.startsWith('gpt-5-') && requestedModel !== 'gpt-5-codex') {
       logger.info(`📝 Model ${requestedModel} detected, normalizing to gpt-5 for Codex API`)
       requestedModel = 'gpt-5'
       req.body.model = 'gpt-5' // 同时更新请求体中的模型
+      schedulerModel = 'gpt-5'
     }
 
     const isStream = req.body?.stream !== false // 默认为流式（兼容现有行为）
@@ -292,7 +329,7 @@ const handleResponses = async (req, res) => {
     ;({ accessToken, accountId, accountType, proxy, account } = await getOpenAIAuthToken(
       apiKeyData,
       sessionId,
-      requestedModel
+      schedulerModel
     ))
 
     // 如果是 OpenAI-Responses 账户，使用专门的中继服务处理
